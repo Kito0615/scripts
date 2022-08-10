@@ -1,313 +1,218 @@
-const modifyCardsUrls = ['/cardlist', '/page', 'video/community_tab'];
-const modifyStatusesUrls = ['statuses/friends/timeline', 'statuses/unread_friends_timeline', 'statuses/unread_hot_timeline', 'groups/timeline'];
+/*
+README：https://github.com/yichahucha/surge/tree/master
+ */
 
-const otherUrls = {
-    '/profile/me': 'removeHome',                        //个人页模块
-    '/statuses/extend': 'removeItem',                   //微博详情页
-    '/video/remind_info': 'removeVideoRemind',          //tab2菜单上的假通知
-    '/checkin/show': 'removeCheckin',                   //签到任务
-    '/live/media_homelist': 'removeMediaHomelist',      //首页直播
-    '/comments/build_comments': 'removeComments',       //微博详情页评论区相关内容
-}
+const path1 = "/groups/timeline";
+const path2 = "/statuses/unread";
+const path3 = "/statuses/extend";
+const path4 = "/comments/build_comments";
+const path5 = "/photo/recommend_list";
+const path6 = "/stories/video_stream";
+const path7 = "/statuses/positives/get";
+const path8 = "/stories/home_list";
+const path9 = "/profile/statuses";
+const path10 = "/statuses/friends/timeline";
+const path11 = "/service/picfeed";
+const path12 = "/fangle/timeline";
+const path13 = "/searchall";
+const path14 = "/cardlist";
+const path15 = "/statuses/video_timeline";
+const path16 = "/page";
+const path17 = "/statuses/friends_timeline";
+const path18 = "/!/photos/pic_recommend_status";
+const path19 = "/statuses/video_mixtimeline";
+const path20 = "/video/tiny_stream_video_list";
+const path21 = "/photo/info";
+const path22 = "/live/media_homelist";
+const path23 = "/remind/unread_count";
 
-//个人中心移除选项配置，多数是可以直接在微博的更多功能里直接移除
-const homeConfig = {
-    removeVip: true,            //移除头像旁边的vip样式
-    removeCreatorTask: true,    //移除创作者中心下方的轮播图
-}
+const url = $request.url;
+let body = $response.body;
 
-//微博详情页配置
-const itemConfig = {
-    removeRelate: true,     //相关推荐
-    removeGood: true,       //微博主好物种草
-    removeFollow: true,     //关注博主
-    modifyMenus: true,      //编辑上下文菜单
-    removeRelateItem: false,    //相关内容
-}
-
-//菜单配置
-const itemMenusConfig = {
-    creator_task:false,                 //转发任务
-    mblog_menus_custom:false,               //寄微博
-    mblog_menus_video_later:true,           //可能是稍后再看？没出现过
-    mblog_menus_comment_manager:true,       //评论管理
-    mblog_menus_avatar_widget:false,        //头像挂件
-    mblog_menus_card_bg: false,         //卡片背景
-    mblog_menus_long_picture:true,      //生成长图
-    mblog_menus_delete:true,                //删除
-    mblog_menus_edit:true,              //编辑
-    mblog_menus_edit_history:true,      //编辑记录
-    mblog_menus_edit_video:true,            //编辑视频
-    mblog_menus_sticking:true,          //置顶
-    mblog_menus_open_reward:true,           //赞赏
-    mblog_menus_novelty:false,          //新鲜事投稿
-    mblog_menus_favorite:true,          //收藏
-    mblog_menus_promote:true,               //推广
-    mblog_menus_modify_visible:true,        //设置分享范围
-    mblog_menus_copy_url:true,          //复制链接
-    mblog_menus_follow:true,                //关注
-    mblog_menus_video_feedback:true,        //播放反馈
-    mblog_menus_shield:true,                //屏蔽
-    mblog_menus_report:true,                //投诉
-    mblog_menus_apeal:true,             //申诉
-    mblog_menus_home:true                   //返回首页
-}
-
-const otherConfig = {
-    removeLiveMedia: true,  //首页直播
-}
-
-let isDebug = false;
-
-function needModify(url) {
-    for (const s of modifyCardsUrls) {
-        if(url.indexOf(s) > -1) {
-            return true;
+if (
+    url.indexOf(path1) != -1 ||
+    url.indexOf(path2) != -1 ||
+    url.indexOf(path10) != -1 ||
+    url.indexOf(path15) != -1 ||
+    url.indexOf(path17) != -1 ||
+    url.indexOf(path20) != -1
+) {
+    let obj = JSON.parse(body);
+    if (obj.statuses) obj.statuses = filter_timeline_statuses(obj.statuses);
+    if (obj.advertises) obj.advertises = [];
+    if (obj.ad) obj.ad = [];
+    if (obj.num) obj.num = obj.original_num;
+    if (obj.trends) obj.trends = [];
+    body = JSON.stringify(obj);
+} else if (url.indexOf(path3) != -1) {
+    let obj = JSON.parse(body);
+    if (obj.trend) delete obj.trend;
+    body = JSON.stringify(obj);
+} else if (url.indexOf(path4) != -1) {
+    let obj = JSON.parse(body);
+    obj.recommend_max_id = 0;
+    if (obj.status) {
+        if (obj.top_hot_structs) {
+            obj.max_id = obj.top_hot_structs.call_back_struct.max_id;
+            delete obj.top_hot_structs;
+        }
+        if (obj.datas) obj.datas = filter_comments(obj.datas);
+    } else {
+        obj.datas = [];
+    }
+    body = JSON.stringify(obj);
+} else if (url.indexOf(path5) != -1 || url.indexOf(path18) != -1) {
+    let obj = JSON.parse(body);
+    obj.data = {};
+    body = JSON.stringify(obj);
+} else if (url.indexOf(path6) != -1) {
+    let obj = JSON.parse(body);
+    let segments = obj.segments;
+    if (segments && segments.length > 0) {
+        let i = segments.length;
+        while (i--) {
+            const element = segments[i];
+            let is_ad = element.is_ad;
+            if (is_ad && is_ad == true) segments.splice(i, 1);
         }
     }
-    for (const s of modifyStatusesUrls) {
-        if(url.indexOf(s) > -1) {
-            return true;
-        }
+    body = JSON.stringify(obj);
+} else if (url.indexOf(path7) != -1) {
+    let obj = JSON.parse(body);
+    obj.datas = [];
+    body = JSON.stringify(obj);
+} else if (url.indexOf(path8) != -1) {
+    let obj = JSON.parse(body);
+    obj.story_list = [];
+    body = JSON.stringify(obj);
+} else if (url.indexOf(path11) != -1 || url.indexOf(path22) != -1) {
+    let obj = JSON.parse(body);
+    obj.data = [];
+    body = JSON.stringify(obj);
+} else if (
+    url.indexOf(path9) != -1 ||
+    url.indexOf(path12) != -1 ||
+    url.indexOf(path13) != -1 ||
+    url.indexOf(path14) != -1 ||
+    url.indexOf(path16) != -1
+) {
+    let obj = JSON.parse(body);
+    if (obj.cards) obj.cards = filter_timeline_cards(obj.cards);
+    body = JSON.stringify(obj);
+} else if (url.indexOf(path19) != -1) {
+    let obj = JSON.parse(body);
+    delete obj.expandable_view;
+    if (obj.hasOwnProperty("expandable_views")) delete obj.expandable_views;
+    body = JSON.stringify(obj);
+} else if (url.indexOf(path21) != -1) {
+    if (body.indexOf("ad_params") != -1) {
+        body = JSON.stringify({});
     }
-    for(const s of Object.keys(otherUrls)) {
-        if(url.indexOf(s) > -1) {
-            return true;
-        }
-    }
-    return false;
-}
-
-
-function isAd(data) {
-    if(!data) {
-        return false;
-    }
-    return data.mblogtypename == '广告' || data.mblogtypename == '热推';
-}
-
-function removeCards(data) {
-    if(!data.cards) {
-        return;
-    }
-    let newCards = [];
-    for (const card of data.cards) {
-        let cardGroup = card.card_group;
-        if(cardGroup && cardGroup.length > 0) {
-            let newGroup = [];
-            for (const group of cardGroup) {
-                let cardType = group.card_type;
-                if(cardType != 118) {
-                    newGroup.push(group);
-                }
-            }
-            card.card_group = newGroup;
-            newCards.push(card);
-        } else {
-            let cardType = card.card_type;
-            if([9,165].indexOf(cardType) > -1) {
-                if(!isAd(card.mblog)) {
-                    newCards.push(card);
-                }
-            } else {
-                newCards.push(card);
-            }
-        }
-    }
-    data.cards = newCards;
-}
-
-
-function removeTimeLine(data) {
-    if(data.ad) {
-        data.ad = [];
-    }
-    if(data.advertises) {
-        data.advertises = [];
-    }
-    if(!data.statuses) {
-        return;
-    }
-    let newStatuses = [];
-    for (const s of data.statuses) {
-        if(!isAd(s)) {
-            newStatuses.push(s);
-        }
-    }
-    data.statuses = newStatuses;
-}
-
-
-function removeVip(data) {
-    if(!data.header) {
-        return data;
-    }
-    let vipCenter = data.header.vipCenter;
-    if(!vipCenter) {
-        return data;
-    }
-    vipCenter.icon = '';
-    vipCenter.title.content = '会员中心';
-    return data;
-}
-
-//移除tab2的假通知
-function removeVideoRemind(data) {
-    data.bubble_dismiss_time = 0;
-    data.exist_remind = false;
-    data.image_dismiss_time = 0;
-    data.image = '';
-    data.tag_image_english = '';
-    data.tag_image_english_dark = '';
-    data.tag_image_normal = '';
-    data.tag_image_normal_dark = '';
-}
-
-
-//微博详情页
-function removeItem(data) {
-    if(itemConfig.removeRelate || itemConfig.removeGood) {
-        if(data.trend && data.trend.titles) {
-            let title = data.trend.titles.title;
-            if(itemConfig.removeRelate && title === '相关推荐') {
-                data.trend = null;
-            } else if (itemConfig.removeGood && title === '博主好物种草') {
-                data.trend = null;
-            }
-        }
-    }
-    if(itemConfig.removeFollow) {
-        if(data.follow_data) {
-            data.follow_data = null;
-        }
-    }
-
-    //广告 暂时判断逻辑根据图片 https://h5.sinaimg.cn/upload/1007/25/2018/05/03/timeline_icon_ad_delete.png
-    try {
-        let picUrl = data.trend.extra_struct.extBtnInfo.btn_picurl;
-        if(picUrl.indexOf('timeline_icon_ad_delete') > -1) {
-            data.trend = null;
-        }
-    } catch (error) {
-        
-    }
-
-
-    if(itemConfig.modifyMenus && data.custom_action_list) {
-        let newActions = [];
-        for (const item of data.custom_action_list) {
-            let _t = item.type;
-            let add = itemMenusConfig[_t]
-            if(add === undefined) {
-                newActions.push(item);
-            } else if(_t === 'mblog_menus_copy_url') {
-                newActions.unshift(item);
-            } else if(add) {
-                newActions.push(item);
-            }
-        }
-        data.custom_action_list = newActions;
-    }
-}
-
-function removeHome(data) {
-    if(!data.items) {
-        return data;
-    }
-    let newItems = [];
-    for (let item of data.items) {
-        let itemId = item.itemId;
-        if(itemId == 'profileme_mine') {
-            if(homeConfig.removeVip) {
-                item = removeVip(item);;
-            }
-            newItems.push(item);
-        } else if (itemId == '100505_-_newcreator') {
-            if(homeConfig.removeCreatorTask) {
-                if(item.type == 'grid') {
-                    newItems.push(item);
-                }
-            } else {
-                newItems.push(item);
-            }
-        } else if(['mine_attent_title', '100505_-_meattent_pic', '100505_-_newusertask'].indexOf(itemId) > -1) {
-            continue;
-        } else if (itemId.match(/100505_-_meattent_-_\d+/)) {
-            continue;
-        } else {
-            newItems.push(item);
-        }
-    }
-    data.items = newItems;
-    return data;
-}
-
-
-//移除tab1签到
-function removeCheckin(data) {
-    data.show = 0;
-}
-
-
-//首页直播
-function removeMediaHomelist(data) {
-    if(otherConfig.removeLiveMedia) {
-        data.data = {};
-    }
-}
-
-//评论区相关内容
-function removeComments(data) {
-    if(!itemConfig.removeRelateItem) {
-        return;
-    }
-    let items = data.datas || [];
-    if(items.length === 0) {
-        return;
-    }
-    let newItems = [];
-    for (const item of items) {
-        if(item.adType != '相关内容') {
-            newItems.push(item);
-        }
-    }
-    data.datas = newItems;
-}
-
-
-function modifyMain(url, data) {
-    if(isDebug) {
-        console.log(new Date());
-        console.log(url);
-    }
-    for (const s of modifyCardsUrls) {
-        if(url.indexOf(s) > -1) {
-            removeCards(data);
-            return;
-        }
-    }
-    for (const s of modifyStatusesUrls) {
-        if(url.indexOf(s) > -1) {
-            removeTimeLine(data);
-            return;
-        }
-    }
-    for(const [path, method] of Object.entries(otherUrls)) {
-        if(url.indexOf(path) > -1) {
-            console.log(method);
-            var func = eval(method);
-            new func(data);
-            return;
-        }
-    }
-}
-
-var body = $response.body;
-var url = $request.url;
-if(needModify(url)) {
-    var obj = JSON.parse(body);
-    modifyMain(url, obj);
+} else if (url.indexOf(path23) != -1) {
+    let obj = JSON.parse(body);
+    obj.video = {};
     body = JSON.stringify(obj);
 }
+$done({ body });
 
-$done(body);
+function filter_timeline_statuses(statuses) {
+    if (statuses && statuses.length > 0) {
+        let i = statuses.length;
+        while (i--) {
+            let element = statuses[i];
+            if (
+                is_timeline_likerecommend(element.title) ||
+                is_timeline_ad(element) ||
+                is_stream_video_ad(element)
+            ) {
+                statuses.splice(i, 1);
+            }
+        }
+    }
+    return statuses;
+}
+
+function filter_comments(datas) {
+    if (datas && datas.length > 0) {
+        let i = datas.length;
+        while (i--) {
+            const element = datas[i];
+            const type = element.type;
+            if (type == 5 || type == 1 || type == 6) datas.splice(i, 1);
+        }
+    }
+    return datas;
+}
+
+function filter_timeline_cards(cards) {
+    if (cards && cards.length > 0) {
+        let j = cards.length;
+        while (j--) {
+            let item = cards[j];
+            let card_group = item.card_group;
+            if (card_group && card_group.length > 0) {
+                if (item.itemid && item.itemid == "hotword") {
+                    filter_top_search(card_group);
+                } else {
+                    let i = card_group.length;
+                    while (i--) {
+                        let card_group_item = card_group[i];
+                        let card_type = card_group_item.card_type;
+                        if (card_type) {
+                            if (card_type == 9) {
+                                if (is_timeline_ad(card_group_item.mblog))
+                                    card_group.splice(i, 1);
+                            } else if (card_type == 118 || card_type == 89) {
+                                card_group.splice(i, 1);
+                            } else if (card_type == 42) {
+                                if (
+                                    card_group_item.desc ==
+                                    "\u53ef\u80fd\u611f\u5174\u8da3\u7684\u4eba"
+                                ) {
+                                    cards.splice(j, 1);
+                                    break;
+                                }
+                            } else if (card_type == 17) {
+                                filter_top_search(card_group_item.group);
+                            }
+                        }
+                    }
+                }
+            } else {
+                let card_type = item.card_type;
+                if (card_type && card_type == 9) {
+                    if (is_timeline_ad(item.mblog)) cards.splice(j, 1);
+                }
+            }
+        }
+    }
+    return cards;
+}
+
+function filter_top_search(group) {
+    if (group && group.length > 0) {
+        let k = group.length;
+        while (k--) {
+            let group_item = group[k];
+            if (group_item.hasOwnProperty("promotion")) {
+                group.splice(k, 1);
+            }
+        }
+    }
+}
+
+function is_timeline_ad(mblog) {
+    if (!mblog) return false;
+    let promotiontype =
+        mblog.promotion && mblog.promotion.type && mblog.promotion.type == "ad";
+    let mblogtype = mblog.mblogtype && mblog.mblogtype == 1;
+    return promotiontype || mblogtype ? true : false;
+}
+
+function is_timeline_likerecommend(title) {
+    return title && title.type && title.type == "likerecommend" ? true : false;
+}
+
+function is_stream_video_ad(item) {
+    return item.ad_state && item.ad_state == 1;
+}
