@@ -7,7 +7,6 @@ by JDHelloWorld 20220509
 */
 
 const $ = new Env('东东农场');
-console.log('\n====================Hello World====================\n');
 
 let cookiesArr = [], cookie = '', notify, allMessage = '';
 let newShareCodes = [], shareCodes = []
@@ -36,7 +35,7 @@ let NoNeedCodes = []
       option = {};
       $.retry = 0;
       lnrun++;
-      await shareCodesFormat();
+      // await shareCodesFormat();
       await jdFruit();
       if (lnrun === 5) {
         console.log(`访问接口次数达到5次，休息一分钟.....`);
