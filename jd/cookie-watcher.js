@@ -32,7 +32,7 @@ var CONFIG = {
   maskValue: true,          // 通知里对值脱敏，只显示首尾各几位
   maskHead: 4,
   maskTail: 4,
-  notifyOnFirstCapture: false, // 首次建立基线时是否也发一条通知
+  notifyOnFirstCapture: true, // 首次建立基线时是否也发一条通知
   copyToPasteboard: false,  // 变化时把完整的两个值写入剪贴板（方便直接粘贴使用）
   logLevel: 1,              // 0 只打错误 / 1 摘要 / 2 调试；日志永不打印明文值
 };
