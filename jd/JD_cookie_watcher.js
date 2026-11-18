@@ -11,6 +11,10 @@
  *              只有值变化（或上次同步失败待重试）时才发起网络请求，
  *              普通请求零额外延迟；网络最长等待 finishTimeoutMs 后强制放行。
  *
+ * 并发去重：QX 会为每个命中请求各起一份脚本，同一批请求可能同时读到旧值。
+ *           先把新值落盘，再用 $prefs 里一份共享「声明」仲裁，
+ *           同一组值只由其中一个请求发通知 / 同步青龙，避免重复推送。
+ *
  * 凭据安全：client_id / client_secret **不写在脚本里**，也不必长期留在配置里。
  *           见 README「第一步：填写青龙凭据」，用一次性 setup 写入 $prefs。
  *
@@ -41,6 +45,15 @@ var CONFIG = {
   notifyOnFirstCapture: false, // 首次建立基线时是否也发一条通知
   copyToPasteboard: false,  // 变化时把完整的两个值写入剪贴板（会覆盖剪贴板）
   logLevel: 1,              // 0 只打错误 / 1 摘要 / 2 调试；日志永不打印明文值或密钥
+
+  /* ---------------- 并发去重 ---------------- */
+  // 同一批并发请求里，只有抢到「处理声明」的那一份脚本会发通知 / 同步青龙。
+  dedupe: {
+    enabled: true,
+    windowMs: 5000,         // 同一组 Cookie 值在该窗口内只处理一次（毫秒）
+    verifyDelayMs: 200,     // 抢占后短暂复核，让并发请求的写入都落地；0 = 立即复核
+    claimTtlMs: 15000,      // 处理中声明的有效期，超时后允许其它请求接管（防漏通知）
+  },
 
   /* ---------------- 青龙面板 Open API ---------------- */
   qinglong: {
@@ -195,6 +208,115 @@ function composeCookieString(state) {
     parts.push(k + '=' + v + (CONFIG.composeTrailingSemicolon ? ';' : ''));
   }
   return parts.join(CONFIG.composeTrailingSemicolon ? '' : ';');
+}
+
+/* ================================================================== */
+/* 并发去重：用 $prefs 里一份共享「处理声明」仲裁，只存哈希不存明文      */
+/* ================================================================== */
+
+function guardKey() {
+  return CONFIG.storagePrefix + '__eventGuard';
+}
+
+/** 由两个目标键的当前值算出签名；只把哈希写进声明，不新增明文副本 */
+function valueSignature(state) {
+  var values = (state && state.values) || {};
+  var s = '';
+  for (var i = 0; i < CONFIG.cookieKeys.length; i++) {
+    var k = CONFIG.cookieKeys[i];
+    var v = values[k];
+    s += k + '=' + (v === undefined || v === null ? '\u0001' : String(v).length + ':' + v) + '|';
+  }
+  // FNV-1a，两轮不同 seed；不依赖 Math.imul，兼容较老的 JS 引擎
+  function fnv(str, seed) {
+    var x = seed >>> 0;
+    for (var j = 0; j < str.length; j++) {
+      x = (x ^ str.charCodeAt(j)) >>> 0;
+      x = (x + (x << 1) + (x << 4) + (x << 7) + (x << 8) + (x << 24)) >>> 0;
+    }
+    return ('00000000' + x.toString(16)).slice(-8);
+  }
+  return fnv(s, 0x811c9dc5) + fnv(s, 0x9e3779b9);
+}
+
+var TOKEN_SEQ = 0;
+function newToken() {
+  TOKEN_SEQ += 1;
+  return Date.now().toString(36) + '-' + TOKEN_SEQ.toString(36) + '-' +
+    Math.random().toString(36).slice(2, 12);
+}
+
+function readGuard(store) {
+  var raw = store.get(guardKey());
+  if (!raw) return null;
+  try {
+    var g = JSON.parse(raw);
+    return (g && typeof g === 'object') ? g : null;
+  } catch (e) { return null; }
+}
+
+function writeGuard(store, g) {
+  store.set(guardKey(), JSON.stringify(g));
+}
+
+/**
+ * 抢占「本次变化」的处理权；返回 null 表示本次请求什么都不用做。
+ * 先写声明再读回校验：只有读回仍是自己 token 的那份脚本才继续，
+ * 之后还有 verifyDelayMs 的复核窗口，覆盖真正并行的写入竞争。
+ */
+function claimAction(store, sig, wantNotify, wantSync, token, now) {
+  if (!wantNotify && !wantSync) return null;
+
+  var g = readGuard(store);
+  var same = !!(g && g.sig === sig);
+  var age = same ? now - (Number(g.at) || 0) : Infinity;
+  if (age < 0) age = Infinity;   // 设备时钟回拨：把声明当作过期，避免永远卡住
+  var fresh = age < CONFIG.dedupe.windowMs;
+
+  if (same && fresh && g.status === 'done') return null;           // 已完整处理过
+  if (same && g.status === 'claimed' && age < CONFIG.dedupe.claimTtlMs) return null; // 别人正在处理
+
+  // 上次同步失败（failed）：允许补同步，但通知已发过，不再重复
+  var allowNotify = wantNotify && !(same && g && g.notified);
+  var allowSync = wantSync;
+  if (!allowNotify && !allowSync) return null;
+
+  var mine = {
+    sig: sig,
+    token: token,
+    at: now,
+    status: 'claimed',
+    notified: !!(same && g && g.notified),
+  };
+  writeGuard(store, mine);
+  var back = readGuard(store);
+  if (!back || back.token !== token) return null;                  // 抢占失败
+
+  return {
+    sig: sig, token: token, at: now,
+    notify: allowNotify, sync: allowSync, notified: mine.notified,
+  };
+}
+
+function claimStillMine(store, token) {
+  var g = readGuard(store);
+  return !!(g && g.token === token && g.status === 'claimed');
+}
+
+function finishClaim(store, claim, failed) {
+  writeGuard(store, {
+    sig: claim.sig,
+    token: claim.token,
+    at: claim.at,
+    status: failed ? 'failed' : 'done',
+    notified: !!(claim.notified || claim.notify),
+  });
+}
+
+function waitVerify() {
+  var ms = CONFIG.dedupe.enabled ? Number(CONFIG.dedupe.verifyDelayMs) || 0 : 0;
+  if (ms <= 0) return Promise.resolve();
+  return new Promise(function (resolve) { setTimeout(resolve, ms); });
 }
 
 /* ================================================================== */
@@ -628,71 +750,104 @@ function processRequest(ctx) {
 
   if (!hadBaseline) log('首次运行，已建立基线：' + firstKeys.join(', '), 1);
 
-  /* ---------- 本地通知 ---------- */
-  if (changes.length) {
-    var opts4 = null;
-    if (CONFIG.copyToPasteboard) {
-      var flat = [];
-      for (var j = 0; j < CONFIG.cookieKeys.length; j++) {
-        var k = CONFIG.cookieKeys[j];
-        if (state.values[k] !== undefined) flat.push(k + '=' + state.values[k]);
-      }
-      opts4 = { 'update-pasteboard': flat.join('; ') };
-    }
-    notify(CONFIG.notifyTitle, changes.length + ' 个键发生变化', buildChangeBody(changes, url), opts4);
-    state.changeCount += changes.length;
-    state.lastChangeAt = isoNow();
-    log('已发送变化通知，涉及 ' + changes.length + ' 个键', 1);
-  } else if (!hadBaseline && CONFIG.notifyOnFirstCapture && firstKeys.length) {
-    notify('Cookie 基线已建立', '已记录 ' + firstKeys.length + ' 个键',
-      '· ' + firstKeys.join('\n· ') + '\n\n此后只有在值发生变化时才会通知。');
-  }
-
-  /* ---------- 决定是否同步青龙 ---------- */
-  var composed = composeCookieString(state);
-  var retryDue = !!state.syncPending &&
-    (Date.now() - (state.syncPendingSince || 0) >= CONFIG.qinglong.retryIntervalSec * 1000);
-  var shouldSync = false;
-  if (CONFIG.qinglong.enabled && composed) {
-    if (changes.length) shouldSync = true;
-    else if (!hadBaseline && CONFIG.qinglong.syncOnFirstCapture) shouldSync = true;
-    else if (state.syncPending && retryDue) shouldSync = true; // 上次失败，自动补同步
-  }
-
-  if (shouldSync) {
-    state.syncPending = composed;
-    state.syncPendingSince = Date.now();
-    log('准备同步到青龙 ' + CONFIG.qinglong.envName, 1);
-  }
-
+  /* ---------- 关键：先把新值落盘 ----------
+     后续启动的脚本读到新基线后，就不会再把同一批值判定为「发生变化」。 */
   state.baseline = true;
   state.lastSeenAt = isoNow();
   state.lastUrl = shortUrl(url);
   store.set(CONFIG.storagePrefix + STATE_KEY_SUFFIX, JSON.stringify(state));
 
-  if (!shouldSync) return null;
+  /* ---------- 并发去重：同一组值只由一份脚本发通知 / 同步青龙 ---------- */
+  var composed = composeCookieString(state);
+  var sig = valueSignature(state);
+  var retryDue = !!state.syncPending &&
+    (Date.now() - (state.syncPendingSince || 0) >= CONFIG.qinglong.retryIntervalSec * 1000);
 
-  var creds = readCredentials(deps);
-  var tokenUsed = readToken(deps.store);
-  return syncToQingLong(deps, composed).then(
-    function (note) {
-      state.syncPending = '';
-      state.lastSyncAt = isoNow();
-      state.lastSyncNote = note;
-      store.set(CONFIG.storagePrefix + STATE_KEY_SUFFIX, JSON.stringify(state));
-      notify('青龙同步成功', CONFIG.qinglong.envName + ' 已更新',
-        '· ' + note + '\n· 值：' + maskValue(composed) + '\n· 时间：' + localTime());
-      log('青龙同步成功：' + note, 1);
-    },
-    function (err) {
-      var safe = scrub(err && err.message ? err.message : err, creds, tokenUsed);
-      if (/401|403|HTTP 4\d\d|token/i.test(safe)) clearToken(deps.store);
-      // 保留 state.syncPending，下次命中请求会自动重试
-      log('青龙同步失败（已标记待重试）：' + safe, 0);
-      notify('青龙同步失败', '下次请求会自动重试',
-        '原因：' + safe + '\n\n本地两个键的值已更新，不影响手机侧记录。');
+  var wantNotify = changes.length > 0 ||
+    (!hadBaseline && CONFIG.notifyOnFirstCapture && firstKeys.length > 0);
+  var wantSync = false;
+  if (CONFIG.qinglong.enabled && composed) {
+    if (changes.length) wantSync = true;
+    else if (!hadBaseline && CONFIG.qinglong.syncOnFirstCapture) wantSync = true;
+    else if (state.syncPending && retryDue) wantSync = true; // 上次失败，自动补同步
+  }
+
+  var claim = CONFIG.dedupe.enabled
+    ? claimAction(store, sig, wantNotify, wantSync, newToken(), Date.now())
+    : ((wantNotify || wantSync)
+      ? { sig: sig, token: '', at: Date.now(), notify: wantNotify, sync: wantSync, notified: false }
+      : null);
+
+  if (!claim) {
+    log('并发去重：同一组值已由其它请求处理，本次跳过通知/同步', 1);
+    return null;
+  }
+
+  return waitVerify().then(function () {
+    if (CONFIG.dedupe.enabled && !claimStillMine(store, claim.token)) {
+      log('并发去重：复核后声明已被覆盖，本次跳过', 1);
+      return null;
     }
-  );
+
+    /* ---------- 本地通知（只有抢到声明的那一份脚本会发）---------- */
+    if (claim.notify) {
+      if (changes.length) {
+        var opts4 = null;
+        if (CONFIG.copyToPasteboard) {
+          var flat = [];
+          for (var j = 0; j < CONFIG.cookieKeys.length; j++) {
+            var k = CONFIG.cookieKeys[j];
+            if (state.values[k] !== undefined) flat.push(k + '=' + state.values[k]);
+          }
+          opts4 = { 'update-pasteboard': flat.join('; ') };
+        }
+        notify(CONFIG.notifyTitle, changes.length + ' 个键发生变化', buildChangeBody(changes, url), opts4);
+        state.changeCount += changes.length;
+        state.lastChangeAt = isoNow();
+        log('已发送变化通知，涉及 ' + changes.length + ' 个键', 1);
+      } else if (!hadBaseline && CONFIG.notifyOnFirstCapture && firstKeys.length) {
+        notify('Cookie 基线已建立', '已记录 ' + firstKeys.length + ' 个键',
+          '· ' + firstKeys.join('\n· ') + '\n\n此后只有在值发生变化时才会通知。');
+      }
+    }
+
+    var shouldSync = !!claim.sync;
+    if (shouldSync) {
+      state.syncPending = composed;
+      state.syncPendingSince = Date.now();
+      log('准备同步到青龙 ' + CONFIG.qinglong.envName, 1);
+    }
+    store.set(CONFIG.storagePrefix + STATE_KEY_SUFFIX, JSON.stringify(state));
+
+    if (!shouldSync) {
+      if (CONFIG.dedupe.enabled) finishClaim(store, claim, false);
+      return null;
+    }
+
+    var creds = readCredentials(deps);
+    var tokenUsed = readToken(deps.store);
+    return syncToQingLong(deps, composed).then(
+      function (note) {
+        state.syncPending = '';
+        state.lastSyncAt = isoNow();
+        state.lastSyncNote = note;
+        store.set(CONFIG.storagePrefix + STATE_KEY_SUFFIX, JSON.stringify(state));
+        if (CONFIG.dedupe.enabled) finishClaim(store, claim, false);
+        notify('青龙同步成功', CONFIG.qinglong.envName + ' 已更新',
+          '· ' + note + '\n· 值：' + maskValue(composed) + '\n· 时间：' + localTime());
+        log('青龙同步成功：' + note, 1);
+      },
+      function (err) {
+        var safe = scrub(err && err.message ? err.message : err, creds, tokenUsed);
+        if (/401|403|HTTP 4\d\d|token/i.test(safe)) clearToken(deps.store);
+        // 保留 state.syncPending，下次命中请求会自动重试
+        if (CONFIG.dedupe.enabled) finishClaim(store, claim, true);
+        log('青龙同步失败（已标记待重试）：' + safe, 0);
+        notify('青龙同步失败', '下次请求会自动重试',
+          '原因：' + safe + '\n\n本地两个键的值已更新，不影响手机侧记录。');
+      }
+    );
+  });
 }
 
 /**
@@ -758,6 +913,11 @@ var API = {
   loadState: loadState,
   buildChangeBody: buildChangeBody,
   composeCookieString: composeCookieString,
+  guardKey: guardKey,
+  valueSignature: valueSignature,
+  claimAction: claimAction,
+  claimStillMine: claimStillMine,
+  finishClaim: finishClaim,
   readCredentials: readCredentials,
   saveCredentials: saveCredentials,
   runSetup: runSetup,
